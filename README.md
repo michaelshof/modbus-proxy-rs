@@ -84,6 +84,24 @@ CI builds a multi-arch image (`linux/amd64`, `linux/arm64`) and pushes it to GHC
 
 Version tags (`v*`) also build release binaries (Linux amd64/arm64, macOS Intel/Apple Silicon, Windows amd64) and attach them to the GitHub Release for that tag.
 
+## systemd
+
+For a non-Docker install on Linux:
+
+```bash
+sudo install -m 755 target/release/modbus-proxy-rs /usr/local/bin/
+# or install a release binary from GitHub Releases
+sudo mkdir -p /etc/modbus-proxy-rs
+sudo cp config.example.yaml /etc/modbus-proxy-rs/config.yaml
+# edit /etc/modbus-proxy-rs/config.yaml
+sudo useradd --system --no-create-home --shell /usr/sbin/nologin modbus-proxy
+sudo cp systemd/modbus-proxy-rs.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now modbus-proxy-rs
+```
+
+Logs: `journalctl -u modbus-proxy-rs -f`
+
 ## How it works
 
 Modbus TCP frames (MBAP + PDU) are parsed and forwarded as-is (unit ID and function codes unchanged). Only one request is in flight on the upstream socket at a time; other clients wait on a per-device mutex. If the upstream connection drops, the proxy reconnects on the next request.

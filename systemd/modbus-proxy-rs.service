@@ -1,0 +1,31 @@
+# Modbus TCP multi-connection proxy
+#
+# Install layout:
+#   Binary: /usr/local/bin/modbus-proxy-rs
+#   Config: /etc/modbus-proxy-rs/config.yaml
+#   User:   modbus-proxy (system account)
+#
+# Adjust ExecStart / paths if you install elsewhere.
+# Binding to ports below 1024 requires CAP_NET_BIND_SERVICE or root
+# (the example config uses 5020+).
+
+[Unit]
+Description=Modbus TCP multi-connection proxy
+Documentation=https://github.com/michaelshof/modbus-proxy-rs
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=modbus-proxy
+Group=modbus-proxy
+ExecStart=/usr/local/bin/modbus-proxy-rs --config /etc/modbus-proxy-rs/config.yaml
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
