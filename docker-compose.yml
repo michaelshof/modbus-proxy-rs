@@ -1,0 +1,15 @@
+services:
+  modbus-proxy:
+    build: .
+    volumes:
+      - ./config.yaml:/app/config.yaml:ro
+    environment:
+      CONFIG_PATH: /app/config.yaml
+    # Map each device bind port from config.yaml
+    ports:
+      - "${HOST_PORTS}:${APP_PORTS}"
+    restart: unless-stopped
+    # Upstream devices must be reachable from this container.
+    # For LAN devices on the Docker host network, consider:
+    # network_mode: host
+    # (then omit the ports: section)
