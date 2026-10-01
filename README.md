@@ -80,6 +80,8 @@ You can map to different host ports if needed (e.g. `HOST_PORTS=15020-15021` wit
 
 Clients connect to the published host ports (e.g. `localhost:5020`). The container must be able to reach each upstream `remote` host. On Linux, `network_mode: host` in `docker-compose.yml` can simplify access to LAN devices (omit the `ports:` section if you use host networking).
 
+CI builds a multi-arch image (`linux/amd64`, `linux/arm64`) and pushes it to GHCR on pushes to `main` and version tags (`v*`). Pull requests only build (no push).
+
 ## How it works
 
 Modbus TCP frames (MBAP + PDU) are parsed and forwarded as-is (unit ID and function codes unchanged). Only one request is in flight on the upstream socket at a time; other clients wait on a per-device mutex. If the upstream connection drops, the proxy reconnects on the next request.
