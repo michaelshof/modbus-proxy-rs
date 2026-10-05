@@ -16,6 +16,8 @@ cp config.example.yaml config.yaml
 cargo run --release -- --config config.yaml
 ```
 
+Run tests with `cargo test`.
+
 Or:
 
 ```bash

@@ -153,6 +153,14 @@ pub async fn run_device(device: DeviceConfig, timeout_ms: u64) -> Result<()> {
         "listening"
     );
 
+    serve_listener(listener, device, timeout_ms).await
+}
+
+async fn serve_listener(
+    listener: TcpListener,
+    device: DeviceConfig,
+    timeout_ms: u64,
+) -> Result<()> {
     gauge!("modbus_proxy_upstream_connected", "device" => device.name.clone()).set(0.0);
     gauge!("modbus_proxy_clients", "device" => device.name.clone()).set(0.0);
 
@@ -253,5 +261,109 @@ pub async fn spawn_device(device: DeviceConfig, timeout_ms: u64) {
     let name = device.name.clone();
     if let Err(e) = run_device(device, timeout_ms).await {
         error!(device = %name, error = %e, "device proxy stopped");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::net::SocketAddr;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use tokio::time::sleep;
+
+    const READ_HOLDING: [u8; 12] = [
+        0x00, 0x01, 0x00, 0x00, 0x00, 0x06, 0x01, 0x03, 0x00, 0x00, 0x00, 0x01,
+    ];
+
+    fn request_with_tid(tid: u16) -> [u8; 12] {
+        let mut req = READ_HOLDING;
+        req[0..2].copy_from_slice(&tid.to_be_bytes());
+        req
+    }
+
+    async fn echo_upstream(accepts: Arc<AtomicUsize>) -> SocketAddr {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            accepts.fetch_add(1, Ordering::SeqCst);
+            stream.set_nodelay(true).ok();
+            let (reader, writer) = stream.into_split();
+            let mut reader = BufReader::new(reader);
+            let mut writer = BufWriter::new(writer);
+            loop {
+                match mbap::read_adu(&mut reader).await {
+                    Ok(frame) => {
+                        if mbap::write_adu(&mut writer, &frame).await.is_err() {
+                            break;
+                        }
+                    }
+                    Err(_) => break,
+                }
+            }
+            // Reject extra upstream connections by dropping the listener without accept.
+            drop(listener);
+        });
+        addr
+    }
+
+    async fn silent_upstream() -> SocketAddr {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let (_stream, _) = listener.accept().await.unwrap();
+            sleep(Duration::from_secs(30)).await;
+        });
+        addr
+    }
+
+    async fn start_proxy(remote: SocketAddr, timeout_ms: u64) -> SocketAddr {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let device = DeviceConfig {
+            name: "test-1".to_string(),
+            bind: addr.to_string(),
+            remote: remote.to_string(),
+        };
+        tokio::spawn(async move {
+            let _ = serve_listener(listener, device, timeout_ms).await;
+        });
+        addr
+    }
+
+    #[tokio::test]
+    async fn two_clients_share_one_upstream() {
+        let accepts = Arc::new(AtomicUsize::new(0));
+        let upstream = echo_upstream(Arc::clone(&accepts)).await;
+        let proxy = start_proxy(upstream, 2000).await;
+
+        let send = |tid: u16| async move {
+            let mut client = TcpStream::connect(proxy).await.unwrap();
+            client.set_nodelay(true).unwrap();
+            let req = request_with_tid(tid);
+            mbap::write_adu(&mut client, &req).await.unwrap();
+            let resp = mbap::read_adu(&mut client).await.unwrap();
+            assert_eq!(&resp[..], &req[..]);
+        };
+
+        tokio::join!(send(1), send(2));
+        assert_eq!(accepts.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn request_times_out_when_upstream_silent() {
+        let upstream = silent_upstream().await;
+        let proxy = start_proxy(upstream, 200).await;
+
+        let mut client = TcpStream::connect(proxy).await.unwrap();
+        client.set_nodelay(true).unwrap();
+        mbap::write_adu(&mut client, &READ_HOLDING).await.unwrap();
+
+        let result = timeout(Duration::from_secs(2), mbap::read_adu(&mut client)).await;
+        match result {
+            Ok(Err(_)) => {}
+            Ok(Ok(_)) => panic!("expected timeout, got a response"),
+            Err(_) => panic!("client did not see a closed connection after upstream timeout"),
+        }
     }
 }

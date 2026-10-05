@@ -103,4 +103,49 @@ mod tests {
         let err = read_adu(&mut cursor).await.unwrap_err();
         assert!(matches!(err, MbapError::InvalidProtocolId(1)));
     }
+
+    #[tokio::test]
+    async fn empty_reader_is_closed() {
+        let mut cursor: &[u8] = &[];
+        let err = read_adu(&mut cursor).await.unwrap_err();
+        assert!(matches!(err, MbapError::Closed));
+    }
+
+    #[tokio::test]
+    async fn rejects_short_length() {
+        let data: &[u8] = &[0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x01];
+        let mut cursor = data;
+        let err = read_adu(&mut cursor).await.unwrap_err();
+        assert!(matches!(err, MbapError::InvalidLength(1)));
+    }
+
+    #[tokio::test]
+    async fn truncated_pdu_is_closed() {
+        // Header claims 6 more bytes after unit_id, but body is missing.
+        let data: &[u8] = &[0x00, 0x01, 0x00, 0x00, 0x00, 0x06, 0x01];
+        let mut cursor = data;
+        let err = read_adu(&mut cursor).await.unwrap_err();
+        assert!(matches!(err, MbapError::Closed));
+    }
+
+    #[tokio::test]
+    async fn rejects_oversized_frame() {
+        let length = (MAX_ADU_LEN - 6 + 1) as u16; // total = 6 + length > MAX_ADU_LEN
+        let mut data = vec![0x00, 0x01, 0x00, 0x00];
+        data.extend_from_slice(&length.to_be_bytes());
+        data.push(0x01);
+        let mut cursor = data.as_slice();
+        let err = read_adu(&mut cursor).await.unwrap_err();
+        assert!(matches!(err, MbapError::TooLarge(_)));
+    }
+
+    #[tokio::test]
+    async fn write_adu_round_trip() {
+        let data: &[u8] = &[
+            0x00, 0x01, 0x00, 0x00, 0x00, 0x06, 0x01, 0x03, 0x00, 0x00, 0x00, 0x01,
+        ];
+        let mut out = Vec::new();
+        write_adu(&mut out, data).await.unwrap();
+        assert_eq!(out, data);
+    }
 }

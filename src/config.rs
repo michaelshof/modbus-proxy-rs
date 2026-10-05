@@ -37,13 +37,17 @@ fn default_log_level() -> String {
 }
 
 impl Config {
+    pub fn parse(yaml: &str) -> Result<Self> {
+        let config: Config = serde_yaml::from_str(yaml).context("failed to parse config YAML")?;
+        config.validate()?;
+        Ok(config)
+    }
+
     pub fn load(path: &Path) -> Result<Self> {
         let contents = fs::read_to_string(path)
             .with_context(|| format!("failed to read config file {}", path.display()))?;
-        let config: Config = serde_yaml::from_str(&contents)
-            .with_context(|| format!("failed to parse config file {}", path.display()))?;
-        config.validate()?;
-        Ok(config)
+        Self::parse(&contents)
+            .with_context(|| format!("failed to parse config file {}", path.display()))
     }
 
     fn validate(&self) -> Result<()> {
@@ -88,5 +92,107 @@ impl Config {
                 .with_context(|| format!("invalid metrics.bind address '{}'", metrics.bind))?;
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn valid_yaml() -> &'static str {
+        r#"
+devices:
+  - name: inverter-1
+    bind: "0.0.0.0:5020"
+    remote: "192.168.1.10:502"
+  - name: meter-1
+    bind: "127.0.0.1:5021"
+    remote: "192.168.1.11:502"
+"#
+    }
+
+    #[test]
+    fn parses_valid_yaml_with_defaults() {
+        let cfg = Config::parse(valid_yaml()).unwrap();
+        assert_eq!(cfg.devices.len(), 2);
+        assert_eq!(cfg.devices[0].name, "inverter-1");
+        assert_eq!(cfg.timeout_ms, 3000);
+        assert_eq!(cfg.log_level, "info");
+        assert!(cfg.metrics.is_none());
+    }
+
+    #[test]
+    fn accepts_hostname_remote() {
+        let yaml = r#"
+devices:
+  - name: inverter-1
+    bind: "0.0.0.0:5020"
+    remote: "device.example:502"
+"#;
+        let cfg = Config::parse(yaml).unwrap();
+        assert_eq!(cfg.devices[0].remote, "device.example:502");
+    }
+
+    #[test]
+    fn rejects_empty_devices() {
+        let err = Config::parse("devices: []\n").unwrap_err();
+        assert!(err.to_string().contains("at least one device"));
+    }
+
+    #[test]
+    fn rejects_empty_device_name() {
+        let yaml = r#"
+devices:
+  - name: "  "
+    bind: "0.0.0.0:5020"
+    remote: "192.168.1.10:502"
+"#;
+        let err = Config::parse(yaml).unwrap_err();
+        assert!(err.to_string().contains("name must not be empty"));
+    }
+
+    #[test]
+    fn rejects_invalid_bind() {
+        let yaml = r#"
+devices:
+  - name: inverter-1
+    bind: "not-an-address"
+    remote: "192.168.1.10:502"
+"#;
+        let err = Config::parse(yaml).unwrap_err();
+        assert!(err.to_string().contains("invalid bind address"));
+    }
+
+    #[test]
+    fn rejects_remote_missing_port() {
+        let yaml = r#"
+devices:
+  - name: inverter-1
+    bind: "0.0.0.0:5020"
+    remote: "192.168.1.10"
+"#;
+        let err = Config::parse(yaml).unwrap_err();
+        assert!(err.to_string().contains("invalid remote"));
+    }
+
+    #[test]
+    fn rejects_zero_timeout() {
+        let yaml = format!("{}\ntimeout_ms: 0\n", valid_yaml());
+        let err = Config::parse(&yaml).unwrap_err();
+        assert!(err.to_string().contains("timeout_ms"));
+    }
+
+    #[test]
+    fn rejects_invalid_metrics_bind() {
+        let yaml = format!("{}\nmetrics:\n  bind: \"nope\"\n", valid_yaml());
+        let err = Config::parse(&yaml).unwrap_err();
+        assert!(err.to_string().contains("metrics.bind"));
+    }
+
+    #[test]
+    fn accepts_metrics_bind() {
+        let yaml = format!("{}\nmetrics:\n  bind: \"127.0.0.1:9090\"\n", valid_yaml());
+        let cfg = Config::parse(&yaml).unwrap();
+        assert_eq!(cfg.metrics.unwrap().bind, "127.0.0.1:9090");
     }
 }
