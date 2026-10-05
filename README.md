@@ -111,6 +111,8 @@ cp config.example.yaml config.yaml
 docker compose up --build -d
 ```
 
+Compose rotates container logs (`json-file`, `max-size: 10m`, `max-file: 3`). Follow them with `docker compose logs -f`.
+
 Port publishing is controlled by env vars in `.env` (see `.env.example`), used by `docker-compose.yml` as `${HOST_PORTS}:${APP_PORTS}`:
 
 | Variable | Meaning |

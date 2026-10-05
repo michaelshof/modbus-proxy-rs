@@ -9,6 +9,11 @@ services:
     ports:
       - "${HOST_PORTS}:${APP_PORTS}"
     restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
     # Upstream devices must be reachable from this container.
     # For LAN devices on the Docker host network, consider:
     # network_mode: host
