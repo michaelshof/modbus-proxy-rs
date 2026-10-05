@@ -154,3 +154,7 @@ Logs: `journalctl -u modbus-proxy-rs -f`
 ## How it works
 
 Modbus TCP frames (MBAP + PDU) are parsed and forwarded as-is (unit ID and function codes unchanged). Only one request is in flight on the upstream socket at a time; other clients wait on a per-device mutex. If the upstream connection drops, the proxy reconnects on the next request.
+
+## Acknowledgments
+
+This project was generated with AI assistance (Cursor). It has not been independently reviewed by the maintainer beyond running the automated tests.
