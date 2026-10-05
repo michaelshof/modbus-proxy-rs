@@ -152,7 +152,7 @@ The **Modbus Proxy** dashboard is loaded automatically. `config.example.stack.ya
 
 CI builds a multi-arch image (`linux/amd64`, `linux/arm64`) and pushes it to GHCR on pushes to `main` and version tags (`v*`). Pull requests only build (no push).
 
-Version tags (`v*`) also build release binaries (Linux amd64/arm64, macOS Intel/Apple Silicon, Windows amd64) and attach them to the GitHub Release for that tag.
+Version tags (`v*`) also build release binaries (Linux amd64/arm64, macOS Intel/Apple Silicon, Windows amd64) and attach them to the GitHub Release for that tag. Archives include the `grafana`, `prometheus`, and `systemd` directories.
 
 ## systemd
 

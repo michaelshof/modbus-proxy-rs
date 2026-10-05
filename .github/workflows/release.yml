@@ -62,6 +62,7 @@ jobs:
           mkdir -p dist
           cp "$SRC" "dist/${BIN_NAME}${EXT}"
           cp README.md dist/
+          cp -R grafana prometheus systemd dist/
 
           if [[ "$TARGET" == *windows* ]]; then
             (cd dist && 7z a -tzip "../${ASSET}.zip" .)
