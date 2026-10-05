@@ -1,8 +1,9 @@
 use crate::config::DeviceConfig;
 use crate::mbap::{self, MbapError};
 use anyhow::{Context, Result};
+use metrics::{counter, gauge, histogram};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::io::{BufReader, BufWriter};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::Mutex;
@@ -11,15 +12,20 @@ use tracing::{error, info, warn};
 
 /// Shared upstream connection for one device. Requests are serialized via the mutex.
 struct Upstream {
+    device: String,
     remote: String,
     stream: Option<TcpStream>,
+    /// True after invalidate when a connection previously existed.
+    reconnect_pending: bool,
 }
 
 impl Upstream {
-    fn new(remote: String) -> Self {
+    fn new(device: String, remote: String) -> Self {
         Self {
+            device,
             remote,
             stream: None,
+            reconnect_pending: false,
         }
     }
 
@@ -31,12 +37,25 @@ impl Upstream {
                 .with_context(|| format!("failed to connect to {}", self.remote))?;
             stream.set_nodelay(true)?;
             self.stream = Some(stream);
+            gauge!("modbus_proxy_upstream_connected", "device" => self.device.clone()).set(1.0);
+            if self.reconnect_pending {
+                counter!(
+                    "modbus_proxy_upstream_reconnects_total",
+                    "device" => self.device.clone()
+                )
+                .increment(1);
+                self.reconnect_pending = false;
+            }
         }
         Ok(self.stream.as_mut().unwrap())
     }
 
     fn invalidate(&mut self) {
+        if self.stream.is_some() {
+            self.reconnect_pending = true;
+        }
         self.stream = None;
+        gauge!("modbus_proxy_upstream_connected", "device" => self.device.clone()).set(0.0);
     }
 
     async fn exchange(&mut self, request: &[u8]) -> Result<bytes::BytesMut, MbapError> {
@@ -85,6 +104,43 @@ impl Upstream {
     }
 }
 
+struct ClientGuard {
+    device: String,
+}
+
+impl ClientGuard {
+    fn new(device: &str) -> Self {
+        gauge!("modbus_proxy_clients", "device" => device.to_string()).increment(1.0);
+        Self {
+            device: device.to_string(),
+        }
+    }
+}
+
+impl Drop for ClientGuard {
+    fn drop(&mut self) {
+        gauge!("modbus_proxy_clients", "device" => self.device.clone()).decrement(1.0);
+    }
+}
+
+fn record_error(device: &str, reason: &str) {
+    counter!(
+        "modbus_proxy_request_errors_total",
+        "device" => device.to_string(),
+        "reason" => reason.to_string()
+    )
+    .increment(1);
+}
+
+fn error_reason(err: &MbapError) -> &'static str {
+    match err {
+        MbapError::InvalidProtocolId(_)
+        | MbapError::InvalidLength(_)
+        | MbapError::TooLarge(_) => "protocol",
+        MbapError::Closed | MbapError::Io(_) => "upstream",
+    }
+}
+
 pub async fn run_device(device: DeviceConfig, timeout_ms: u64) -> Result<()> {
     let listener = TcpListener::bind(&device.bind)
         .await
@@ -97,7 +153,13 @@ pub async fn run_device(device: DeviceConfig, timeout_ms: u64) -> Result<()> {
         "listening"
     );
 
-    let upstream = Arc::new(Mutex::new(Upstream::new(device.remote.clone())));
+    gauge!("modbus_proxy_upstream_connected", "device" => device.name.clone()).set(0.0);
+    gauge!("modbus_proxy_clients", "device" => device.name.clone()).set(0.0);
+
+    let upstream = Arc::new(Mutex::new(Upstream::new(
+        device.name.clone(),
+        device.remote.clone(),
+    )));
     let timeout_dur = Duration::from_millis(timeout_ms);
     let device_name = device.name.clone();
 
@@ -109,7 +171,6 @@ pub async fn run_device(device: DeviceConfig, timeout_ms: u64) -> Result<()> {
 
         tokio::spawn(async move {
             if let Err(e) = handle_client(client, peer, upstream, timeout_dur, &device_name).await {
-                // Closed connections are normal; log others at warn.
                 match e.downcast_ref::<MbapError>() {
                     Some(MbapError::Closed) => {
                         tracing::debug!(device = %device_name, peer = %peer, "client disconnected");
@@ -130,6 +191,7 @@ async fn handle_client(
     timeout_dur: Duration,
     device_name: &str,
 ) -> Result<()> {
+    let _client_guard = ClientGuard::new(device_name);
     info!(device = %device_name, peer = %peer, "client connected");
 
     let (reader, writer) = client.into_split();
@@ -140,19 +202,37 @@ async fn handle_client(
         let request = match mbap::read_adu(&mut reader).await {
             Ok(frame) => frame,
             Err(MbapError::Closed) => return Ok(()),
-            Err(e) => return Err(e.into()),
+            Err(e) => {
+                record_error(device_name, error_reason(&e));
+                return Err(e.into());
+            }
         };
 
+        let started = Instant::now();
         let response = {
             let mut up = upstream.lock().await;
             match timeout(timeout_dur, up.exchange(&request)).await {
-                Ok(Ok(resp)) => resp,
+                Ok(Ok(resp)) => {
+                    let elapsed = started.elapsed().as_secs_f64();
+                    histogram!(
+                        "modbus_proxy_request_duration_seconds",
+                        "device" => device_name.to_string()
+                    )
+                    .record(elapsed);
+                    counter!(
+                        "modbus_proxy_requests_total",
+                        "device" => device_name.to_string()
+                    )
+                    .increment(1);
+                    resp
+                }
                 Ok(Err(e)) => {
-                    // Drop lock and propagate; client will see session end.
+                    record_error(device_name, error_reason(&e));
                     return Err(e.into());
                 }
                 Err(_) => {
                     up.invalidate();
+                    record_error(device_name, "timeout");
                     return Err(anyhow::anyhow!(
                         "upstream request timed out after {:?}",
                         timeout_dur
@@ -162,6 +242,7 @@ async fn handle_client(
         };
 
         if let Err(e) = mbap::write_adu(&mut writer, &response).await {
+            record_error(device_name, error_reason(&e));
             return Err(e.into());
         }
     }

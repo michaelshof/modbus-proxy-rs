@@ -1,11 +1,13 @@
 mod config;
 mod device;
 mod mbap;
+mod metrics;
 
 use anyhow::{Context, Result};
 use clap::Parser;
+use std::net::SocketAddr;
 use std::path::PathBuf;
-use tracing::info;
+use tracing::{error, info};
 use tracing_subscriber::EnvFilter;
 
 #[derive(Debug, Parser)]
@@ -42,6 +44,22 @@ async fn main() -> Result<()> {
         timeout_ms = cfg.timeout_ms,
         "starting modbus-proxy-rs"
     );
+
+    if cfg.metrics.is_some() {
+        let handle = metrics::install_recorder()?;
+        let bind: SocketAddr = cfg
+            .metrics
+            .as_ref()
+            .unwrap()
+            .bind
+            .parse()
+            .expect("metrics.bind validated at load");
+        tokio::spawn(async move {
+            if let Err(e) = metrics::serve(bind, handle).await {
+                error!(error = %e, "metrics server stopped");
+            }
+        });
+    }
 
     let mut handles = Vec::with_capacity(cfg.devices.len());
     for device in cfg.devices {

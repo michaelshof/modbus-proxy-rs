@@ -9,3 +9,7 @@ devices:
 # optional globals (defaults shown)
 timeout_ms: 3000
 log_level: info
+
+# Opt-in Prometheus scrape endpoint (omit to disable)
+# metrics:
+#   bind: "0.0.0.0:9090"

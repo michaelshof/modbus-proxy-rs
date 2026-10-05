@@ -11,6 +11,14 @@ pub struct Config {
     pub timeout_ms: u64,
     #[serde(default = "default_log_level")]
     pub log_level: String,
+    /// Opt-in Prometheus scrape endpoint. Omit to disable.
+    #[serde(default)]
+    pub metrics: Option<MetricsConfig>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct MetricsConfig {
+    pub bind: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -72,6 +80,12 @@ impl Config {
         }
         if self.timeout_ms == 0 {
             bail!("timeout_ms must be greater than 0");
+        }
+        if let Some(metrics) = &self.metrics {
+            metrics
+                .bind
+                .parse::<SocketAddr>()
+                .with_context(|| format!("invalid metrics.bind address '{}'", metrics.bind))?;
         }
         Ok(())
     }

@@ -38,19 +38,66 @@ devices:
 
 timeout_ms: 3000
 log_level: info
+
+# metrics:
+#   bind: "0.0.0.0:9090"
 ```
 
 
 | Field        | Description                                           |
 | ------------ | ----------------------------------------------------- |
-| `name`       | Label used in logs                                    |
+| `name`       | Label used in logs and as the Prometheus `device` label |
 | `bind`       | Local listen address (`ip:port`)                      |
 | `remote`     | Upstream Modbus TCP device (`host:port`)              |
 | `timeout_ms` | Per-request upstream timeout (default `3000`)         |
 | `log_level`  | Tracing filter, e.g. `info`, `debug` (default `info`) |
+| `metrics`    | Optional Prometheus scrape config (see below)         |
 
 
 CLI: `--config <path>` (env: `CONFIG_PATH`, default `config.yaml`).
+
+## Metrics (Prometheus)
+
+Opt-in. Add to the config to enable a scrape endpoint:
+
+```yaml
+metrics:
+  bind: "0.0.0.0:9090"
+```
+
+Scrape URL: `http://<bind>/metrics`. Omit `metrics` entirely to disable.
+
+Per-device series use the `device` label (config `name`):
+
+| Metric | Type | Meaning |
+|--------|------|---------|
+| `modbus_proxy_requests_total` | counter | Successful upstream exchanges |
+| `modbus_proxy_request_errors_total` | counter | Failed exchanges (`reason`: `timeout`, `upstream`, `protocol`) |
+| `modbus_proxy_request_duration_seconds` | histogram | Upstream exchange latency |
+| `modbus_proxy_clients` | gauge | Active client connections |
+| `modbus_proxy_upstream_connected` | gauge | `1` if upstream socket is open |
+| `modbus_proxy_upstream_reconnects_total` | counter | Upstream reconnects after disconnect |
+
+Example Prometheus scrape config:
+
+```yaml
+scrape_configs:
+  - job_name: modbus-proxy
+    static_configs:
+      - targets: ["127.0.0.1:9090"]
+```
+
+When using Docker, map the metrics port as well (e.g. add `9090:9090` under `ports`, or extend `HOST_PORTS` / `APP_PORTS` if you publish ranges). The systemd unit does not open ports by itself; ensure firewall rules allow the metrics bind if needed.
+
+### Grafana dashboard
+
+An importable dashboard is in [`grafana/modbus-proxy-rs.json`](grafana/modbus-proxy-rs.json):
+
+1. Grafana → **Dashboards** → **New** → **Import**
+2. Upload the JSON (or paste it)
+3. Select your Prometheus datasource when prompted
+
+The dashboard includes a `device` variable (multi-select / All) and panels for request rate, errors, latency, clients, upstream connectivity, and reconnects. Latency panels use summary quantiles (`quantile="0.95"`) and `_sum`/`_count` from the metrics exporter’s DDSketch output — not classic Prometheus `_bucket` histograms.
 
 ## Docker
 
