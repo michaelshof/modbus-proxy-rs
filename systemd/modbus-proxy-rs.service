@@ -26,6 +26,9 @@ NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=true
 PrivateTmp=true
+MemoryAccounting=yes
+CPUAccounting=yes
+TasksAccounting=yes
 
 [Install]
 WantedBy=multi-user.target

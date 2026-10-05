@@ -170,7 +170,7 @@ sudo systemctl daemon-reload
 sudo systemctl enable --now modbus-proxy-rs
 ```
 
-Logs: `journalctl -u modbus-proxy-rs -f`
+Logs: `journalctl -u modbus-proxy-rs -f`. After installing an updated unit file, run `sudo systemctl daemon-reload && sudo systemctl restart modbus-proxy-rs` so `systemctl status` can show memory/CPU.
 
 ## How it works
 
