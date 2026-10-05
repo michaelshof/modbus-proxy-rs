@@ -1,0 +1,54 @@
+# Use: docker compose --env-file .env.stack -f docker-compose.stack.yml up --build -d
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+services:
+  modbus-proxy:
+    build: .
+    volumes:
+      - ./config.stack.yaml:/config/config.yaml:ro
+    environment:
+      CONFIG_PATH: /config/config.yaml
+    ports:
+      - "${HOST_PORTS}:${APP_PORTS}"
+      - "9090:9090"
+    restart: unless-stopped
+    logging: *default-logging
+
+  prometheus:
+    image: prom/prometheus:latest
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    ports:
+      - "9091:9090"
+    restart: unless-stopped
+    logging: *default-logging
+    depends_on:
+      - modbus-proxy
+
+  grafana:
+    image: grafana/grafana:latest
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
+      GF_USERS_DEFAULT_THEME: dark
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/modbus-proxy-rs.json:/var/lib/grafana/dashboards/modbus-proxy-rs.json:ro
+      - grafana-data:/var/lib/grafana
+    ports:
+      - "3000:3000"
+    restart: unless-stopped
+    logging: *default-logging
+    depends_on:
+      - prometheus
+
+volumes:
+  prometheus-data:
+  grafana-data:

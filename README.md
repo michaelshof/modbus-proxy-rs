@@ -131,6 +131,25 @@ You can map to different host ports if needed (e.g. `HOST_PORTS=15020-15021` wit
 
 Clients connect to the published host ports (e.g. `localhost:5020`). The container must be able to reach each upstream `remote` host. On Linux, `network_mode: host` in `docker-compose.yml` can simplify access to LAN devices (omit the `ports:` section if you use host networking).
 
+### Observability stack
+
+Prometheus and Grafana (dashboard pre-provisioned):
+
+```bash
+cp .env.example.stack .env.stack
+cp config.example.stack.yaml config.stack.yaml
+# edit config.stack.yaml bind/remote addresses
+docker compose --env-file .env.stack -f docker-compose.stack.yml up --build -d
+```
+
+| URL | Service |
+| --- | ------- |
+| `http://localhost:3000` | Grafana (admin / `GRAFANA_ADMIN_PASSWORD` from `.env.stack`, default `admin`) |
+| `http://localhost:9091` | Prometheus |
+| `http://localhost:9090/metrics` | Proxy scrape endpoint |
+
+The **Modbus Proxy** dashboard is loaded automatically. `config.example.stack.yaml` enables `metrics.bind: "0.0.0.0:9090"`.
+
 CI builds a multi-arch image (`linux/amd64`, `linux/arm64`) and pushes it to GHCR on pushes to `main` and version tags (`v*`). Pull requests only build (no push).
 
 Version tags (`v*`) also build release binaries (Linux amd64/arm64, macOS Intel/Apple Silicon, Windows amd64) and attach them to the GitHub Release for that tag.
