@@ -39,6 +39,7 @@ devices:
     remote: "192.168.1.11:502"
 
 timeout_ms: 3000
+gap_ms: 0
 log_level: info
 
 # metrics:
@@ -51,7 +52,8 @@ log_level: info
 | `name`       | Label used in logs and as the Prometheus `device` label |
 | `bind`       | Local listen address (`ip:port`)                      |
 | `remote`     | Upstream Modbus TCP device (`host:port`)              |
-| `timeout_ms` | Per-request upstream timeout (default `3000`)         |
+| `timeout_ms` | Per-request upstream timeout in ms (global default `3000`). Set on a device to override. |
+| `gap_ms`     | Pause after each upstream exchange before the next request (global default `0`). Set on a device to override. |
 | `log_level`  | Tracing filter, e.g. `info`, `debug` (default `info`) |
 | `metrics`    | Optional Prometheus scrape config (see below)         |
 

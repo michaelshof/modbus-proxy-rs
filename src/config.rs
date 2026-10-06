@@ -9,6 +9,9 @@ pub struct Config {
     pub devices: Vec<DeviceConfig>,
     #[serde(default = "default_timeout_ms")]
     pub timeout_ms: u64,
+    /// Pause after each upstream exchange before the next request. Default 0.
+    #[serde(default)]
+    pub gap_ms: u64,
     #[serde(default = "default_log_level")]
     pub log_level: String,
     /// Opt-in Prometheus scrape endpoint. Omit to disable.
@@ -26,6 +29,12 @@ pub struct DeviceConfig {
     pub name: String,
     pub bind: String,
     pub remote: String,
+    /// Overrides global `timeout_ms` when set.
+    #[serde(default)]
+    pub timeout_ms: Option<u64>,
+    /// Overrides global `gap_ms` when set.
+    #[serde(default)]
+    pub gap_ms: Option<u64>,
 }
 
 fn default_timeout_ms() -> u64 {
@@ -81,6 +90,12 @@ impl Config {
                     device.remote
                 );
             }
+            if matches!(device.timeout_ms, Some(0)) {
+                bail!(
+                    "timeout_ms must be greater than 0 for device '{}'",
+                    device.name
+                );
+            }
         }
         if self.timeout_ms == 0 {
             bail!("timeout_ms must be greater than 0");
@@ -117,6 +132,9 @@ devices:
         assert_eq!(cfg.devices.len(), 2);
         assert_eq!(cfg.devices[0].name, "inverter-1");
         assert_eq!(cfg.timeout_ms, 3000);
+        assert_eq!(cfg.gap_ms, 0);
+        assert!(cfg.devices[0].timeout_ms.is_none());
+        assert!(cfg.devices[0].gap_ms.is_none());
         assert_eq!(cfg.log_level, "info");
         assert!(cfg.metrics.is_none());
     }
@@ -173,6 +191,47 @@ devices:
 "#;
         let err = Config::parse(yaml).unwrap_err();
         assert!(err.to_string().contains("invalid remote"));
+    }
+
+    #[test]
+    fn device_timeout_and_gap_override_globals() {
+        let yaml = r#"
+devices:
+  - name: inverter-1
+    bind: "0.0.0.0:5020"
+    remote: "192.168.1.10:502"
+    timeout_ms: 5000
+    gap_ms: 100
+timeout_ms: 3000
+gap_ms: 50
+"#;
+        let cfg = Config::parse(yaml).unwrap();
+        assert_eq!(cfg.devices[0].timeout_ms, Some(5000));
+        assert_eq!(cfg.devices[0].gap_ms, Some(100));
+        assert_eq!(cfg.devices[0].timeout_ms.unwrap_or(cfg.timeout_ms), 5000);
+        assert_eq!(cfg.devices[0].gap_ms.unwrap_or(cfg.gap_ms), 100);
+    }
+
+    #[test]
+    fn global_gap_applies_when_device_omits_gap() {
+        let yaml = format!("{}\ngap_ms: 50\n", valid_yaml());
+        let cfg = Config::parse(&yaml).unwrap();
+        assert_eq!(cfg.gap_ms, 50);
+        assert!(cfg.devices[0].gap_ms.is_none());
+        assert_eq!(cfg.devices[0].gap_ms.unwrap_or(cfg.gap_ms), 50);
+    }
+
+    #[test]
+    fn rejects_zero_device_timeout() {
+        let yaml = r#"
+devices:
+  - name: inverter-1
+    bind: "0.0.0.0:5020"
+    remote: "192.168.1.10:502"
+    timeout_ms: 0
+"#;
+        let err = Config::parse(yaml).unwrap_err();
+        assert!(err.to_string().contains("timeout_ms"));
     }
 
     #[test]

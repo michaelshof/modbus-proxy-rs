@@ -42,6 +42,7 @@ async fn main() -> Result<()> {
     info!(
         devices = cfg.devices.len(),
         timeout_ms = cfg.timeout_ms,
+        gap_ms = cfg.gap_ms,
         "starting modbus-proxy-rs"
     );
 
@@ -63,9 +64,10 @@ async fn main() -> Result<()> {
 
     let mut handles = Vec::with_capacity(cfg.devices.len());
     for device in cfg.devices {
-        let timeout_ms = cfg.timeout_ms;
+        let timeout_ms = device.timeout_ms.unwrap_or(cfg.timeout_ms);
+        let gap_ms = device.gap_ms.unwrap_or(cfg.gap_ms);
         handles.push(tokio::spawn(async move {
-            device::spawn_device(device, timeout_ms).await;
+            device::spawn_device(device, timeout_ms, gap_ms).await;
         }));
     }
 

@@ -141,7 +141,13 @@ fn error_reason(err: &MbapError) -> &'static str {
     }
 }
 
-pub async fn run_device(device: DeviceConfig, timeout_ms: u64) -> Result<()> {
+async fn apply_gap(gap_ms: u64) {
+    if gap_ms > 0 {
+        tokio::time::sleep(Duration::from_millis(gap_ms)).await;
+    }
+}
+
+pub async fn run_device(device: DeviceConfig, timeout_ms: u64, gap_ms: u64) -> Result<()> {
     let listener = TcpListener::bind(&device.bind)
         .await
         .with_context(|| format!("failed to bind {} for device '{}'", device.bind, device.name))?;
@@ -150,16 +156,19 @@ pub async fn run_device(device: DeviceConfig, timeout_ms: u64) -> Result<()> {
         device = %device.name,
         bind = %device.bind,
         remote = %device.remote,
+        timeout_ms,
+        gap_ms,
         "listening"
     );
 
-    serve_listener(listener, device, timeout_ms).await
+    serve_listener(listener, device, timeout_ms, gap_ms).await
 }
 
 async fn serve_listener(
     listener: TcpListener,
     device: DeviceConfig,
     timeout_ms: u64,
+    gap_ms: u64,
 ) -> Result<()> {
     gauge!("modbus_proxy_upstream_connected", "device" => device.name.clone()).set(0.0);
     gauge!("modbus_proxy_clients", "device" => device.name.clone()).set(0.0);
@@ -178,7 +187,9 @@ async fn serve_listener(
         let device_name = device_name.clone();
 
         tokio::spawn(async move {
-            if let Err(e) = handle_client(client, peer, upstream, timeout_dur, &device_name).await {
+            if let Err(e) =
+                handle_client(client, peer, upstream, timeout_dur, gap_ms, &device_name).await
+            {
                 match e.downcast_ref::<MbapError>() {
                     Some(MbapError::Closed) => {
                         tracing::debug!(device = %device_name, peer = %peer, "client disconnected");
@@ -197,6 +208,7 @@ async fn handle_client(
     peer: std::net::SocketAddr,
     upstream: Arc<Mutex<Upstream>>,
     timeout_dur: Duration,
+    gap_ms: u64,
     device_name: &str,
 ) -> Result<()> {
     let _client_guard = ClientGuard::new(device_name);
@@ -219,7 +231,7 @@ async fn handle_client(
         let started = Instant::now();
         let response = {
             let mut up = upstream.lock().await;
-            match timeout(timeout_dur, up.exchange(&request)).await {
+            let result = match timeout(timeout_dur, up.exchange(&request)).await {
                 Ok(Ok(resp)) => {
                     let elapsed = started.elapsed().as_secs_f64();
                     histogram!(
@@ -232,21 +244,23 @@ async fn handle_client(
                         "device" => device_name.to_string()
                     )
                     .increment(1);
-                    resp
+                    Ok(resp)
                 }
                 Ok(Err(e)) => {
                     record_error(device_name, error_reason(&e));
-                    return Err(e.into());
+                    Err(anyhow::Error::from(e))
                 }
                 Err(_) => {
                     up.invalidate();
                     record_error(device_name, "timeout");
-                    return Err(anyhow::anyhow!(
+                    Err(anyhow::anyhow!(
                         "upstream request timed out after {:?}",
                         timeout_dur
-                    ));
+                    ))
                 }
-            }
+            };
+            apply_gap(gap_ms).await;
+            result?
         };
 
         if let Err(e) = mbap::write_adu(&mut writer, &response).await {
@@ -257,9 +271,9 @@ async fn handle_client(
 }
 
 /// Run forever; on fatal listener error, log and return.
-pub async fn spawn_device(device: DeviceConfig, timeout_ms: u64) {
+pub async fn spawn_device(device: DeviceConfig, timeout_ms: u64, gap_ms: u64) {
     let name = device.name.clone();
-    if let Err(e) = run_device(device, timeout_ms).await {
+    if let Err(e) = run_device(device, timeout_ms, gap_ms).await {
         error!(device = %name, error = %e, "device proxy stopped");
     }
 }
@@ -324,9 +338,11 @@ mod tests {
             name: "test-1".to_string(),
             bind: addr.to_string(),
             remote: remote.to_string(),
+            timeout_ms: None,
+            gap_ms: None,
         };
         tokio::spawn(async move {
-            let _ = serve_listener(listener, device, timeout_ms).await;
+            let _ = serve_listener(listener, device, timeout_ms, 0).await;
         });
         addr
     }

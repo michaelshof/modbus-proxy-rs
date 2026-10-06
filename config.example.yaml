@@ -8,7 +8,15 @@ devices:
 
 # optional globals (defaults shown)
 timeout_ms: 3000
+gap_ms: 0
 log_level: info
+
+# Per-device timeout_ms / gap_ms override the globals when set:
+#   - name: bt-si-master
+#     bind: "0.0.0.0:5026"
+#     remote: "172.16.8.26:502"
+#     timeout_ms: 5000
+#     gap_ms: 100
 
 # Opt-in Prometheus scrape endpoint (omit to disable)
 # metrics:
