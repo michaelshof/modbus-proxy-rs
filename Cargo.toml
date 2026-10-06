@@ -1,6 +1,6 @@
 [package]
 name = "modbus-proxy-rs"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 description = "Modbus TCP proxy that multiplexes multiple client connections onto a single upstream connection per device"
 license = "MIT"
