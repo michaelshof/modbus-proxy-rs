@@ -115,6 +115,8 @@ docker compose up --build -d
 
 Compose rotates container logs (`json-file`, `max-size: 10m`, `max-file: 3`). Follow them with `docker compose logs -f`.
 
+`docker compose stop` / `docker stop` sends **SIGTERM**; the proxy stops accepting clients, finishes in-flight Modbus exchanges, then exits.
+
 Port publishing is controlled by env vars in `.env` (see `.env.example`), used by `docker-compose.yml` as `${HOST_PORTS}:${APP_PORTS}`:
 
 | Variable | Meaning |
@@ -173,6 +175,8 @@ sudo systemctl enable --now modbus-proxy-rs
 ```
 
 Logs: `journalctl -u modbus-proxy-rs -f`. After installing an updated unit file, run `sudo systemctl daemon-reload && sudo systemctl restart modbus-proxy-rs` so `systemctl status` can show memory/CPU.
+
+`systemctl stop` sends **SIGTERM**; the proxy stops accepting clients, finishes in-flight Modbus exchanges, then exits (SIGINT / Ctrl+C does the same).
 
 ## How it works
 

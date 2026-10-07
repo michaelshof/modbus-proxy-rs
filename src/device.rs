@@ -7,8 +7,13 @@ use std::time::{Duration, Instant};
 use tokio::io::{BufReader, BufWriter};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::Mutex;
+use tokio::task::JoinSet;
 use tokio::time::timeout;
+use tokio_util::sync::CancellationToken;
 use tracing::{error, info, warn};
+
+/// How long to wait for client tasks to finish after cancel before aborting them.
+const SHUTDOWN_DRAIN: Duration = Duration::from_secs(7);
 
 /// Shared upstream connection for one device. Requests are serialized via the mutex.
 struct Upstream {
@@ -147,7 +152,12 @@ async fn apply_gap(gap_ms: u64) {
     }
 }
 
-pub async fn run_device(device: DeviceConfig, timeout_ms: u64, gap_ms: u64) -> Result<()> {
+pub async fn run_device(
+    device: DeviceConfig,
+    timeout_ms: u64,
+    gap_ms: u64,
+    cancel: CancellationToken,
+) -> Result<()> {
     let listener = TcpListener::bind(&device.bind)
         .await
         .with_context(|| format!("failed to bind {} for device '{}'", device.bind, device.name))?;
@@ -161,7 +171,7 @@ pub async fn run_device(device: DeviceConfig, timeout_ms: u64, gap_ms: u64) -> R
         "listening"
     );
 
-    serve_listener(listener, device, timeout_ms, gap_ms).await
+    serve_listener(listener, device, timeout_ms, gap_ms, cancel).await
 }
 
 async fn serve_listener(
@@ -169,6 +179,7 @@ async fn serve_listener(
     device: DeviceConfig,
     timeout_ms: u64,
     gap_ms: u64,
+    cancel: CancellationToken,
 ) -> Result<()> {
     gauge!("modbus_proxy_upstream_connected", "device" => device.name.clone()).set(0.0);
     gauge!("modbus_proxy_clients", "device" => device.name.clone()).set(0.0);
@@ -179,28 +190,67 @@ async fn serve_listener(
     )));
     let timeout_dur = Duration::from_millis(timeout_ms);
     let device_name = device.name.clone();
+    let mut clients = JoinSet::new();
 
     loop {
-        let (client, peer) = listener.accept().await?;
-        client.set_nodelay(true)?;
-        let upstream = Arc::clone(&upstream);
-        let device_name = device_name.clone();
-
-        tokio::spawn(async move {
-            if let Err(e) =
-                handle_client(client, peer, upstream, timeout_dur, gap_ms, &device_name).await
-            {
-                match e.downcast_ref::<MbapError>() {
-                    Some(MbapError::Closed) => {
-                        tracing::debug!(device = %device_name, peer = %peer, "client disconnected");
-                    }
-                    _ => {
-                        warn!(device = %device_name, peer = %peer, error = %e, "client session ended");
-                    }
-                }
+        tokio::select! {
+            _ = cancel.cancelled() => {
+                info!(device = %device_name, "shutdown: stop accepting clients");
+                break;
             }
-        });
+            accepted = listener.accept() => {
+                let (client, peer) = accepted?;
+                client.set_nodelay(true)?;
+                let upstream = Arc::clone(&upstream);
+                let device_name = device_name.clone();
+                let client_cancel = cancel.child_token();
+
+                clients.spawn(async move {
+                    if let Err(e) = handle_client(
+                        client,
+                        peer,
+                        upstream,
+                        timeout_dur,
+                        gap_ms,
+                        &device_name,
+                        client_cancel,
+                    )
+                    .await
+                    {
+                        match e.downcast_ref::<MbapError>() {
+                            Some(MbapError::Closed) => {
+                                tracing::debug!(device = %device_name, peer = %peer, "client disconnected");
+                            }
+                            _ => {
+                                warn!(device = %device_name, peer = %peer, error = %e, "client session ended");
+                            }
+                        }
+                    }
+                });
+            }
+        }
     }
+
+    // Drop the listener so the bind port is released while clients drain.
+    drop(listener);
+
+    if timeout(SHUTDOWN_DRAIN, async {
+        while clients.join_next().await.is_some() {}
+    })
+    .await
+    .is_err()
+    {
+        warn!(
+            device = %device_name,
+            "shutdown: aborting remaining client tasks after {:?}",
+            SHUTDOWN_DRAIN
+        );
+        clients.abort_all();
+        while clients.join_next().await.is_some() {}
+    }
+
+    info!(device = %device_name, "shutdown complete");
+    Ok(())
 }
 
 async fn handle_client(
@@ -210,6 +260,7 @@ async fn handle_client(
     timeout_dur: Duration,
     gap_ms: u64,
     device_name: &str,
+    cancel: CancellationToken,
 ) -> Result<()> {
     let _client_guard = ClientGuard::new(device_name);
     info!(device = %device_name, peer = %peer, "client connected");
@@ -219,13 +270,16 @@ async fn handle_client(
     let mut writer = BufWriter::new(writer);
 
     loop {
-        let request = match mbap::read_adu(&mut reader).await {
-            Ok(frame) => frame,
-            Err(MbapError::Closed) => return Ok(()),
-            Err(e) => {
-                record_error(device_name, error_reason(&e));
-                return Err(e.into());
-            }
+        let request = tokio::select! {
+            _ = cancel.cancelled() => return Ok(()),
+            result = mbap::read_adu(&mut reader) => match result {
+                Ok(frame) => frame,
+                Err(MbapError::Closed) => return Ok(()),
+                Err(e) => {
+                    record_error(device_name, error_reason(&e));
+                    return Err(e.into());
+                }
+            },
         };
 
         let started = Instant::now();
@@ -270,10 +324,15 @@ async fn handle_client(
     }
 }
 
-/// Run forever; on fatal listener error, log and return.
-pub async fn spawn_device(device: DeviceConfig, timeout_ms: u64, gap_ms: u64) {
+/// Run until fatal listener error or shutdown cancel.
+pub async fn spawn_device(
+    device: DeviceConfig,
+    timeout_ms: u64,
+    gap_ms: u64,
+    cancel: CancellationToken,
+) {
     let name = device.name.clone();
-    if let Err(e) = run_device(device, timeout_ms, gap_ms).await {
+    if let Err(e) = run_device(device, timeout_ms, gap_ms, cancel).await {
         error!(device = %name, error = %e, "device proxy stopped");
     }
 }
@@ -341,8 +400,9 @@ mod tests {
             timeout_ms: None,
             gap_ms: None,
         };
+        let cancel = CancellationToken::new();
         tokio::spawn(async move {
-            let _ = serve_listener(listener, device, timeout_ms, 0).await;
+            let _ = serve_listener(listener, device, timeout_ms, 0, cancel).await;
         });
         addr
     }
@@ -381,5 +441,31 @@ mod tests {
             Ok(Ok(_)) => panic!("expected timeout, got a response"),
             Err(_) => panic!("client did not see a closed connection after upstream timeout"),
         }
+    }
+
+    #[tokio::test]
+    async fn cancel_stops_listener() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let device = DeviceConfig {
+            name: "shutdown-test".to_string(),
+            bind: listener.local_addr().unwrap().to_string(),
+            remote: "127.0.0.1:1".to_string(),
+            timeout_ms: None,
+            gap_ms: None,
+        };
+        let cancel = CancellationToken::new();
+        let cancel_clone = cancel.clone();
+        let serve = tokio::spawn(async move {
+            serve_listener(listener, device, 1000, 0, cancel_clone).await
+        });
+
+        // Let the accept loop start.
+        sleep(Duration::from_millis(50)).await;
+        cancel.cancel();
+
+        let result = timeout(Duration::from_secs(1), serve).await;
+        let join = result.expect("serve_listener did not finish within 1s");
+        join.expect("serve task panicked")
+            .expect("serve_listener returned error");
     }
 }

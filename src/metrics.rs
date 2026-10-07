@@ -3,6 +3,7 @@ use axum::routing::get;
 use axum::Router;
 use metrics_exporter_prometheus::{PrometheusBuilder, PrometheusHandle};
 use std::net::SocketAddr;
+use tokio_util::sync::CancellationToken;
 use tracing::info;
 
 /// Install the global Prometheus recorder and return a handle for rendering.
@@ -12,8 +13,12 @@ pub fn install_recorder() -> Result<PrometheusHandle> {
         .context("failed to install Prometheus metrics recorder")
 }
 
-/// Serve `GET /metrics` on `bind` until the process exits.
-pub async fn serve(bind: SocketAddr, handle: PrometheusHandle) -> Result<()> {
+/// Serve `GET /metrics` on `bind` until `cancel` is cancelled.
+pub async fn serve(
+    bind: SocketAddr,
+    handle: PrometheusHandle,
+    cancel: CancellationToken,
+) -> Result<()> {
     let app = Router::new().route(
         "/metrics",
         get(move || {
@@ -29,6 +34,9 @@ pub async fn serve(bind: SocketAddr, handle: PrometheusHandle) -> Result<()> {
     info!(%bind, "metrics endpoint listening at http://{bind}/metrics");
 
     axum::serve(listener, app)
+        .with_graceful_shutdown(async move {
+            cancel.cancelled().await;
+        })
         .await
         .context("metrics HTTP server error")?;
 

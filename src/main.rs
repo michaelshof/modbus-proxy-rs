@@ -2,11 +2,13 @@ mod config;
 mod device;
 mod mbap;
 mod metrics;
+mod shutdown;
 
 use anyhow::{Context, Result};
 use clap::Parser;
 use std::net::SocketAddr;
 use std::path::PathBuf;
+use tokio_util::sync::CancellationToken;
 use tracing::{error, info};
 use tracing_subscriber::EnvFilter;
 
@@ -46,6 +48,19 @@ async fn main() -> Result<()> {
         "starting modbus-proxy-rs"
     );
 
+    let cancel = CancellationToken::new();
+
+    let signal_cancel = cancel.clone();
+    tokio::spawn(async move {
+        match shutdown::wait_for_shutdown().await {
+            Ok(()) => info!("shutdown signal received"),
+            Err(e) => error!(error = %e, "failed to listen for shutdown signals"),
+        }
+        signal_cancel.cancel();
+    });
+
+    let mut handles = Vec::new();
+
     if cfg.metrics.is_some() {
         let handle = metrics::install_recorder()?;
         let bind: SocketAddr = cfg
@@ -55,26 +70,27 @@ async fn main() -> Result<()> {
             .bind
             .parse()
             .expect("metrics.bind validated at load");
-        tokio::spawn(async move {
-            if let Err(e) = metrics::serve(bind, handle).await {
+        let metrics_cancel = cancel.clone();
+        handles.push(tokio::spawn(async move {
+            if let Err(e) = metrics::serve(bind, handle, metrics_cancel).await {
                 error!(error = %e, "metrics server stopped");
             }
-        });
-    }
-
-    let mut handles = Vec::with_capacity(cfg.devices.len());
-    for device in cfg.devices {
-        let timeout_ms = device.timeout_ms.unwrap_or(cfg.timeout_ms);
-        let gap_ms = device.gap_ms.unwrap_or(cfg.gap_ms);
-        handles.push(tokio::spawn(async move {
-            device::spawn_device(device, timeout_ms, gap_ms).await;
         }));
     }
 
-    // Wait for all device tasks (they run until fatal error).
+    for device in cfg.devices {
+        let timeout_ms = device.timeout_ms.unwrap_or(cfg.timeout_ms);
+        let gap_ms = device.gap_ms.unwrap_or(cfg.gap_ms);
+        let device_cancel = cancel.clone();
+        handles.push(tokio::spawn(async move {
+            device::spawn_device(device, timeout_ms, gap_ms, device_cancel).await;
+        }));
+    }
+
     for handle in handles {
         let _ = handle.await;
     }
 
+    info!("modbus-proxy-rs stopped");
     Ok(())
 }
