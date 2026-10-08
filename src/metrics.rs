@@ -3,8 +3,12 @@ use axum::routing::get;
 use axum::Router;
 use metrics_exporter_prometheus::{PrometheusBuilder, PrometheusHandle};
 use std::net::SocketAddr;
+use std::time::Duration;
 use tokio_util::sync::CancellationToken;
 use tracing::info;
+
+/// Matches `metrics-exporter-prometheus` default upkeep interval.
+const UPKEEP_INTERVAL: Duration = Duration::from_secs(5);
 
 /// Install the global Prometheus recorder and return a handle for rendering.
 pub fn install_recorder() -> Result<PrometheusHandle> {
@@ -21,9 +25,12 @@ pub async fn serve(
 ) -> Result<()> {
     let app = Router::new().route(
         "/metrics",
-        get(move || {
+        get({
             let handle = handle.clone();
-            async move { handle.render() }
+            move || {
+                let handle = handle.clone();
+                async move { handle.render() }
+            }
         }),
     );
 
@@ -33,12 +40,30 @@ pub async fn serve(
 
     info!(%bind, "metrics endpoint listening at http://{bind}/metrics");
 
-    axum::serve(listener, app)
+    // `install_recorder` does not spawn upkeep; drain histogram samples periodically.
+    let upkeep_handle = handle.clone();
+    let upkeep_cancel = cancel.clone();
+    let upkeep = tokio::spawn(async move {
+        loop {
+            tokio::select! {
+                _ = upkeep_cancel.cancelled() => break,
+                _ = tokio::time::sleep(UPKEEP_INTERVAL) => {
+                    upkeep_handle.run_upkeep();
+                }
+            }
+        }
+    });
+
+    let result = axum::serve(listener, app)
         .with_graceful_shutdown(async move {
             cancel.cancelled().await;
         })
         .await
-        .context("metrics HTTP server error")?;
+        .context("metrics HTTP server error");
 
+    upkeep.abort();
+    let _ = upkeep.await;
+
+    result?;
     Ok(())
 }

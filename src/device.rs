@@ -198,6 +198,8 @@ async fn serve_listener(
                 info!(device = %device_name, "shutdown: stop accepting clients");
                 break;
             }
+            // Reap finished clients so JoinSet does not retain them until shutdown.
+            Some(_) = clients.join_next() => {}
             accepted = listener.accept() => {
                 let (client, peer) = accepted?;
                 client.set_nodelay(true)?;
