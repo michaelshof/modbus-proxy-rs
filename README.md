@@ -93,6 +93,30 @@ scrape_configs:
 
 When using Docker, map the metrics port as well (e.g. add `9090:9090` under `ports`, or extend `HOST_PORTS` / `APP_PORTS` if you publish ranges). The systemd unit does not open ports by itself; ensure firewall rules allow the metrics bind if needed.
 
+### Firewall (UFW)
+
+Optional UFW application profile for the metrics port (default `9090`):
+
+```ini
+[Modbus Proxy Metrics]
+title=modbus-proxy-rs Prometheus metrics
+description=Prometheus scrape endpoint for modbus-proxy-rs (/metrics)
+ports=9090/tcp
+```
+
+```bash
+sudo tee /etc/ufw/applications.d/modbus-proxy-rs <<'EOF'
+[Modbus Proxy Metrics]
+title=modbus-proxy-rs Prometheus metrics
+description=Prometheus scrape endpoint for modbus-proxy-rs (/metrics)
+ports=9090/tcp
+EOF
+sudo ufw app update "Modbus Proxy Metrics"
+sudo ufw allow from <prometheus-host-or-cidr> to any app "Modbus Proxy Metrics"
+```
+
+Adjust `ports=` if `metrics.bind` uses a different port, and replace `<prometheus-host-or-cidr>` with your Prometheus host or scrape network (prefer that over opening the app to the world).
+
 ### Grafana dashboard
 
 An importable dashboard is in [`grafana/modbus-proxy-rs.json`](grafana/modbus-proxy-rs.json):
